@@ -1,22 +1,87 @@
 open Unix
 
+module HTTPRequest = struct
+  (** Type of HTTP methods. *)
+  type meth =
+    | GET
+  [@@deriving show { with_path = false }]
+
+  (** Type of HTTP requests. *)
+  type t = {
+    meth    : meth;
+    path    : string;
+    version : int * int;
+  }
+  [@@deriving show { with_path = false }]
+
+  module Parse = struct
+    open Angstrom
+
+    (** [is_space c] is true if [c] is a whitespace character. *)
+    let is_space = function
+      | ' ' | '\t' -> true
+      | _          -> false
+
+    (** [is_digit c] is true if [c] is a digit. *)
+    let is_digit = function
+      | '0' .. '9' -> true
+      | _          -> false
+
+    (** [digits] parses one or more digit characters. *)
+    let digits = take_while1 is_digit
+
+    (** [spaces] parses whitespace characters and discards them. *)
+    let spaces = skip_while is_space
+
+    (** [lex p] parses [p] followed by whitespace characters. *)
+    let lex p = p <* spaces
+
+    (** [meth] parses an HTTP method. *)
+    let meth =
+      take_till is_space >>= function
+      | "GET" -> return GET
+      | _     -> fail "unknown method"
+
+    (** [uri] parses a URI. *)
+    let uri = take_till is_space
+
+    (** [version] parses an HTTP version. *)
+    let version =
+      string "HTTP/" *>
+      lift2 (fun major minor -> int_of_string major, int_of_string minor)
+        (digits <* char '.')
+        digits
+
+    (** [request_first_line] parses the first line of an HTTP request. *)
+    let request_first_line =
+      lift3 (fun meth path version -> (meth, path, version))
+        (lex meth)
+        (lex uri)
+        version
+
+    (** [request] parses an HTTP request. *)
+    let request =
+      request_first_line >>| fun (meth, path, version) ->
+      { meth; path; version }
+  end
+end
+
 module HTTPResponse = struct
   open Faraday
 
   (** Type of HTTP responses. *)
   type t = {
-    version : int * int;
-    status  : int;
-    body    : string;
+    version : (int * int [@default (1, 1)]);
+    status  : (int       [@default 200]);
+    body    : (string    [@default ""]);
   }
+  [@@deriving make, show { with_path = false }]
 
   let status_codes = [
     (200, "200 OK");
+    (404, "404 Not Found");
+    (500, "500 Internal Server Error");
   ]
-
-  (** [make ?version ?status ?body ()] creates an HTTP response. *)
-  let make ?(version=(1, 1)) ?(status=200) ?(body="") () =
-    { version; status; body }
 
   (** [serialize sr r] serializes the given HTTP response [r]. *)
   let serialize sr r =
@@ -34,6 +99,27 @@ module HTTPResponse = struct
     write_string sr "\r\n";
     write_string sr r.body
 end
+
+(** [read_request sock] reads request from a client socket. *)
+let read_request sock =
+  let open Angstrom.Buffered in
+
+  let size = 0x1000 in
+  let bytes = Bytes.create size in
+
+  let rec loop = function
+    | Partial k ->
+      Unix.read sock bytes 0 size
+      |> begin function
+        | 0   -> k `Eof
+        | len -> k @@ `String Bytes.(unsafe_to_string @@ sub bytes 0 len)
+      end
+      |> loop
+    | state -> state
+  in
+  parse HTTPRequest.Parse.request
+  |> loop
+  |> Angstrom.Buffered.state_to_result
 
 (** [send_response sock sr] sends the serialized HTTP response [sr] to
     [sock]. *)
@@ -56,7 +142,23 @@ let send_response sock t =
 
 (** [handle_request sock] handles an incoming HTTP request. *)
 let handle_request sock =
-  let resp = HTTPResponse.make () in
+  let resp =
+    match read_request sock with
+    | Ok req ->
+      Printf.printf "Request: %s\n%!" @@ HTTPRequest.show req;
+
+      if req.path = "/" then
+        (* A 200 OK response. *)
+        HTTPResponse.make ()
+      else
+        (* A 404 Not Found response. *)
+        HTTPResponse.make ~status:404 ()
+    | Error _ ->
+      Printf.printf "Request: reading error\n%!";
+
+      HTTPResponse.make ~status:500 ()
+  in
+  Printf.printf "Response: %s\n%!" @@ HTTPResponse.show resp;
   let sr = Faraday.create 0x1000 in
   HTTPResponse.serialize sr resp;
   Faraday.close sr;
@@ -64,6 +166,10 @@ let handle_request sock =
 
 (** [server ()] runs an HTTP server. *)
 let server () =
+  (* Ignore the SIGPIPE signal to prevent the program from terminating when
+     attempting to write to a closed socket. *)
+  ignore Sys.(signal sigpipe Signal_ignore);
+
   (* Create a TCP socket bound to the given address. *)
   let saddr = ADDR_INET (inet_addr_of_string "127.0.0.1", 4221) in
   let ssock = socket PF_INET SOCK_STREAM 0 in
