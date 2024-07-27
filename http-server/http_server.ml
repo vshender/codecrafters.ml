@@ -71,11 +71,24 @@ module HTTPResponse = struct
 
   (** Type of HTTP responses. *)
   type t = {
-    version : (int * int [@default (1, 1)]);
-    status  : (int       [@default 200]);
-    body    : (string    [@default ""]);
+    version : int * int;
+    status  : int;
+    headers : (string * string) list;
+    body    : string;
   }
-  [@@deriving make, show { with_path = false }]
+  [@@deriving show { with_path = false }]
+
+  (** [make ?version ?status ?headers ?body ()] creates an HTTP response. *)
+  let make ?(version=(1, 1)) ?(status=200) ?(headers=[]) ?(body="") () =
+    let headers =
+      let body_len = String.length body in
+      if body_len > 0 then
+        headers
+        |> List.remove_assoc "Content-Length"
+        |> List.cons ("Content-Length", string_of_int (String.length body))
+      else
+        headers
+    in { version; status; headers; body }
 
   let status_codes = [
     (200, "200 OK");
@@ -85,19 +98,24 @@ module HTTPResponse = struct
 
   (** [serialize sr r] serializes the given HTTP response [r]. *)
   let serialize sr r =
-    let major, minor = r.version
-    and status_code =
-      try
-        List.assoc r.status status_codes
-      with
-      | Not_found ->
-        List.assoc 500 status_codes
+    let major, minor = r.version in
+    let status_code, headers, body =
+      match List.assoc_opt r.status status_codes with
+      | Some status_code -> status_code, r.headers, r.body
+      | None             -> List.assoc 500 status_codes, [], ""
     in
     write_string sr (Printf.sprintf "HTTP/%d.%d " major minor);
     write_string sr status_code;
     write_string sr "\r\n";
+    List.iter
+      (fun (h, v) ->
+         write_string sr h;
+         write_string sr ": ";
+         write_string sr v;
+         write_string sr "\r\n")
+      headers;
     write_string sr "\r\n";
-    write_string sr r.body
+    write_string sr body
 end
 
 (** [read_request sock] reads request from a client socket. *)
@@ -150,6 +168,14 @@ let handle_request sock =
       if req.path = "/" then
         (* A 200 OK response. *)
         HTTPResponse.make ()
+
+      else if String.starts_with ~prefix:"/echo/" req.path then
+        (* Echo response. *)
+        HTTPResponse.make
+          ~headers:[("Content-Type", "text/plain")]
+          ~body:(String.sub req.path 6 (String.length req.path - 6))
+          ()
+
       else
         (* A 404 Not Found response. *)
         HTTPResponse.make ~status:404 ()
