@@ -11,6 +11,7 @@ module HTTPRequest = struct
     meth    : meth;
     path    : string;
     version : int * int;
+    headers : (string * string) list;
   }
   [@@deriving show { with_path = false }]
 
@@ -59,10 +60,27 @@ module HTTPRequest = struct
         (lex uri)
         version
 
+    (** [header] parses an HTTP header. *)
+    let header =
+      lift2 (fun name value -> String.(lowercase_ascii name, trim value))
+        (take_till (Char.equal ':') <* char ':')
+        (take_till (Char.equal '\r'))
+
+    (** [headers] parses HTTP headers. *)
+    let headers =
+      fix
+        (fun m ->
+           (string "\r\n" >>| fun _ -> [])
+           <|>
+           lift2 (fun h t -> h :: t)
+             (header <* string "\r\n")
+             m)
+
     (** [request] parses an HTTP request. *)
     let request =
-      request_first_line >>| fun (meth, path, version) ->
-      { meth; path; version }
+      request_first_line <* string "\r\n" >>= fun (meth, path, version) ->
+      headers >>| fun headers ->
+      { meth; path; version; headers }
   end
 end
 
@@ -174,6 +192,13 @@ let handle_request sock =
         HTTPResponse.make
           ~headers:[("Content-Type", "text/plain")]
           ~body:(String.sub req.path 6 (String.length req.path - 6))
+          ()
+
+      else if req.path = "/user-agent" then
+        (* User-Agent response. *)
+        HTTPResponse.make
+          ~headers:[("Content-Type", "text/plain")]
+          ~body:(Option.value (List.assoc_opt "user-agent" req.headers) ~default:"unknown")
           ()
 
       else
