@@ -234,16 +234,20 @@ let server () =
     let cni = getnameinfo caddr [] in
     Printf.printf "Connection from %s:%s\n%!" cni.ni_hostname cni.ni_service;
 
-    begin
-      try
-        (* Handle a request. *)
-        handle_request csock;
-        (* Close the connection to the client. *)
-        shutdown csock SHUTDOWN_ALL
-      with
-        e -> Printf.printf "Error: %s\n%!" @@ Printexc.to_string e
-    end;
-    close csock
+    ignore
+      (Thread.create
+         (fun () ->
+            begin
+              try
+                (* Handle a request. *)
+                handle_request csock;
+                (* Close the connection to the client. *)
+                shutdown csock SHUTDOWN_ALL
+              with
+                e -> Printf.printf "Error: %s\n%!" @@ Printexc.to_string e
+            end;
+            close csock)
+         ())
   done
 
 let () = server ()
