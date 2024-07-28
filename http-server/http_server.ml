@@ -1,5 +1,7 @@
 open Unix
 
+open Cmdliner
+
 module HTTPRequest = struct
   (** Type of HTTP methods. *)
   type meth =
@@ -176,8 +178,8 @@ let send_response sock t =
     | `Yield -> assert false
   in loop ()
 
-(** [handle_request sock] handles an incoming HTTP request. *)
-let handle_request sock =
+(** [handle_request sock base_dir] handles an incoming HTTP request. *)
+let handle_request sock base_dir =
   let resp =
     match read_request sock with
     | Ok req ->
@@ -201,6 +203,21 @@ let handle_request sock =
           ~body:(Option.value (List.assoc_opt "user-agent" req.headers) ~default:"unknown")
           ()
 
+      else if String.starts_with ~prefix:"/files/" req.path then
+        (* File response. *)
+        let filename = String.sub req.path 7 (String.length req.path - 7) in
+        let filepath = Filename.concat base_dir filename in
+        match Unix.(access filepath [F_OK]) with
+        | () ->
+          In_channel.with_open_bin filepath @@ fun ic ->
+          HTTPResponse.make
+            ~status:200
+            ~headers:[("Content-Type", "application/octet-stream")]
+            ~body:(In_channel.input_all ic)
+            ()
+        | exception Unix_error _ ->
+          HTTPResponse.make ~status:404 ()
+
       else
         (* A 404 Not Found response. *)
         HTTPResponse.make ~status:404 ()
@@ -215,8 +232,10 @@ let handle_request sock =
   Faraday.close sr;
   send_response sock sr
 
-(** [server ()] runs an HTTP server. *)
-let server () =
+(** [server base_dir] runs an HTTP server. *)
+let server base_dir =
+  Printf.printf "Publish directory: %s\n%!" base_dir;
+
   (* Ignore the SIGPIPE signal to prevent the program from terminating when
      attempting to write to a closed socket. *)
   ignore Sys.(signal sigpipe Signal_ignore);
@@ -240,7 +259,7 @@ let server () =
             begin
               try
                 (* Handle a request. *)
-                handle_request csock;
+                handle_request csock base_dir;
                 (* Close the connection to the client. *)
                 shutdown csock SHUTDOWN_ALL
               with
@@ -250,4 +269,16 @@ let server () =
          ())
   done
 
-let () = server ()
+(** [base_dir] is a command-line argument representing a directory to publish. *)
+let base_dir =
+  let doc = "A directory to publish" in
+  Arg.(value & opt string "/tmp" & info ["d"; "directory"] ~docv:"DIR" ~doc)
+
+(** [cmd] is a command-line interface for the HTTP server.  *)
+let cmd =
+  let doc = "training HTTP-server" in
+  let info = Cmd.info "http_server" ~doc in
+  Cmd.v info Term.(const server $ base_dir)
+
+let () =
+  exit (Cmd.eval cmd)

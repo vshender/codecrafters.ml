@@ -1,5 +1,5 @@
 (executable
  (name http_server)
- (libraries unix threads angstrom faraday)
+ (libraries unix threads angstrom faraday cmdliner)
  (preprocess
   (pps ppx_deriving.std)))
