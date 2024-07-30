@@ -6,6 +6,7 @@ module HTTPRequest = struct
   (** Type of HTTP methods. *)
   type meth =
     | GET
+    | POST
   [@@deriving show { with_path = false }]
 
   (** Type of HTTP requests. *)
@@ -14,6 +15,7 @@ module HTTPRequest = struct
     path    : string;
     version : int * int;
     headers : (string * string) list;
+    body    : string;
   }
   [@@deriving show { with_path = false }]
 
@@ -42,7 +44,8 @@ module HTTPRequest = struct
     (** [meth] parses an HTTP method. *)
     let meth =
       take_till is_space >>= function
-      | "GET" -> return GET
+      | "GET"  -> return GET
+      | "POST" -> return POST
       | _     -> fail "unknown method"
 
     (** [uri] parses a URI. *)
@@ -81,8 +84,12 @@ module HTTPRequest = struct
     (** [request] parses an HTTP request. *)
     let request =
       request_first_line <* string "\r\n" >>= fun (meth, path, version) ->
-      headers >>| fun headers ->
-      { meth; path; version; headers }
+      headers >>= fun headers ->
+      List.assoc_opt "content-length" headers
+      |> Option.map int_of_string
+      |> Option.value ~default:0
+      |> take >>| fun body ->
+      { meth; path; version; headers; body }
   end
 end
 
@@ -112,6 +119,7 @@ module HTTPResponse = struct
 
   let status_codes = [
     (200, "200 OK");
+    (201, "201 Created");
     (404, "404 Not Found");
     (500, "500 Internal Server Error");
   ]
@@ -185,42 +193,61 @@ let handle_request sock base_dir =
     | Ok req ->
       Printf.printf "Request: %s\n%!" @@ HTTPRequest.show req;
 
-      if req.path = "/" then
-        (* A 200 OK response. *)
-        HTTPResponse.make ()
-
-      else if String.starts_with ~prefix:"/echo/" req.path then
-        (* Echo response. *)
-        HTTPResponse.make
-          ~headers:[("Content-Type", "text/plain")]
-          ~body:(String.sub req.path 6 (String.length req.path - 6))
-          ()
-
-      else if req.path = "/user-agent" then
-        (* User-Agent response. *)
-        HTTPResponse.make
-          ~headers:[("Content-Type", "text/plain")]
-          ~body:(Option.value (List.assoc_opt "user-agent" req.headers) ~default:"unknown")
-          ()
-
-      else if String.starts_with ~prefix:"/files/" req.path then
-        (* File response. *)
-        let filename = String.sub req.path 7 (String.length req.path - 7) in
-        let filepath = Filename.concat base_dir filename in
-        match Unix.(access filepath [F_OK]) with
-        | () ->
-          In_channel.with_open_bin filepath @@ fun ic ->
+      if req.meth = HTTPRequest.POST then begin
+        (* File created response. *)
+        if String.starts_with ~prefix:"/files/" req.path then
+          let filename = String.sub req.path 7 (String.length req.path - 7) in
+          let filepath = Filename.concat base_dir filename in
+          Out_channel.with_open_bin filepath @@ fun oc ->
+          Out_channel.output_string oc req.body;
           HTTPResponse.make
-            ~status:200
-            ~headers:[("Content-Type", "application/octet-stream")]
-            ~body:(In_channel.input_all ic)
+            ~status:201
             ()
-        | exception Unix_error _ ->
+
+        else
+          (* A 404 Not Found response. *)
           HTTPResponse.make ~status:404 ()
 
-      else
-        (* A 404 Not Found response. *)
-        HTTPResponse.make ~status:404 ()
+      end else begin
+        if req.path = "/" then
+          (* A 200 OK response. *)
+          HTTPResponse.make ()
+
+        else if String.starts_with ~prefix:"/echo/" req.path then
+          (* Echo response. *)
+          HTTPResponse.make
+            ~headers:[("Content-Type", "text/plain")]
+            ~body:(String.sub req.path 6 (String.length req.path - 6))
+            ()
+
+        else if req.path = "/user-agent" then
+          (* User-Agent response. *)
+          HTTPResponse.make
+            ~headers:[("Content-Type", "text/plain")]
+            ~body:(Option.value
+                     (List.assoc_opt "user-agent" req.headers)
+                     ~default:"unknown")
+            ()
+
+        else if String.starts_with ~prefix:"/files/" req.path then
+          (* File response. *)
+          let filename = String.sub req.path 7 (String.length req.path - 7) in
+          let filepath = Filename.concat base_dir filename in
+          match Unix.(access filepath [F_OK]) with
+          | () ->
+            In_channel.with_open_bin filepath @@ fun ic ->
+            HTTPResponse.make
+              ~status:200
+              ~headers:[("Content-Type", "application/octet-stream")]
+              ~body:(In_channel.input_all ic)
+              ()
+          | exception Unix_error _ ->
+            HTTPResponse.make ~status:404 ()
+
+        else
+          (* A 404 Not Found response. *)
+          HTTPResponse.make ~status:404 ()
+      end
     | Error _ ->
       Printf.printf "Request: reading error\n%!";
 
