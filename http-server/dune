@@ -1,5 +1,5 @@
 (executable
  (name http_server)
- (libraries str unix threads angstrom faraday cmdliner)
+ (libraries str unix threads angstrom faraday cmdliner ezgzip)
  (preprocess
   (pps ppx_deriving.std)))
