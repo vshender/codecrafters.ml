@@ -2,6 +2,17 @@ open Unix
 
 open Cmdliner
 
+let encoders = [
+  ("gzip", true);
+]
+
+(** [replace_assoc k v l] updates the association list [l] by replacing the
+    value associated with [k] with [v]. *)
+let replace_assoc k v l =
+  l
+  |> List.remove_assoc k
+  |> List.cons (k, v)
+
 module HTTPRequest = struct
   (** Type of HTTP methods. *)
   type meth =
@@ -105,17 +116,22 @@ module HTTPResponse = struct
   }
   [@@deriving show { with_path = false }]
 
-  (** [make ?version ?status ?headers ?body ()] creates an HTTP response. *)
-  let make ?(version=(1, 1)) ?(status=200) ?(headers=[]) ?(body="") () =
-    let headers =
-      let body_len = String.length body in
-      if body_len > 0 then
-        headers
-        |> List.remove_assoc "Content-Length"
-        |> List.cons ("Content-Length", string_of_int (String.length body))
-      else
-        headers
-    in { version; status; headers; body }
+  (** [make ?version ?status ?headers ?content_encoding ?body ()] creates an
+      HTTP response. *)
+  let make
+      ?(version=(1, 1))
+      ?(status=200)
+      ?(headers=[])
+      ?content_encoding
+      ?(body="")
+      () =
+    let headers = ref headers in
+    let body_len = String.length body in
+    if body_len > 0 then
+      headers := replace_assoc "Content-Length" (string_of_int body_len) !headers;
+    if Option.is_some content_encoding then
+      headers := replace_assoc "Content-Encoding" (Option.get content_encoding) !headers;
+    { version; status; headers = !headers; body }
 
   let status_codes = [
     (200, "200 OK");
@@ -193,6 +209,18 @@ let handle_request sock base_dir =
     | Ok req ->
       Printf.printf "Request: %s\n%!" @@ HTTPRequest.show req;
 
+      (* Choose content encoding. *)
+      let content_encoding =
+        Option.bind
+          (List.assoc_opt "accept-encoding" req.headers)
+          (fun content_encoding ->
+             if List.mem_assoc content_encoding encoders then
+               Some content_encoding
+             else
+               None)
+      in
+
+      (* Handle request. *)
       if req.meth = HTTPRequest.POST then begin
         (* File created response. *)
         if String.starts_with ~prefix:"/files/" req.path then
@@ -217,6 +245,7 @@ let handle_request sock base_dir =
           (* Echo response. *)
           HTTPResponse.make
             ~headers:[("Content-Type", "text/plain")]
+            ?content_encoding
             ~body:(String.sub req.path 6 (String.length req.path - 6))
             ()
 
@@ -224,6 +253,7 @@ let handle_request sock base_dir =
           (* User-Agent response. *)
           HTTPResponse.make
             ~headers:[("Content-Type", "text/plain")]
+            ?content_encoding
             ~body:(Option.value
                      (List.assoc_opt "user-agent" req.headers)
                      ~default:"unknown")
@@ -239,6 +269,7 @@ let handle_request sock base_dir =
             HTTPResponse.make
               ~status:200
               ~headers:[("Content-Type", "application/octet-stream")]
+              ?content_encoding
               ~body:(In_channel.input_all ic)
               ()
           | exception Unix_error _ ->
