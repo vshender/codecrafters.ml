@@ -1,3 +1,5 @@
 (executable
  (name http_server)
- (libraries lwt lwt.unix faraday faraday-lwt-unix))
+ (libraries lwt lwt.unix angstrom angstrom-lwt-unix faraday faraday-lwt-unix)
+ (preprocess
+  (pps ppx_deriving.std)))
