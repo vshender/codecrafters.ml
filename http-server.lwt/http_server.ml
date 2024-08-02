@@ -1,3 +1,4 @@
+open Cmdliner
 open Lwt
 open Lwt.Syntax
 
@@ -159,8 +160,8 @@ let write_response sock resp =
     ~writev:(Faraday_lwt_unix.writev_of_fd sock)
     sr
 
-(** [handle_request sock] handles an incoming HTTP request. *)
-let handle_request sock =
+(** [handle_request sock base_dir] handles an incoming HTTP request. *)
+let handle_request sock base_dir =
   let* resp =
     let* req = read_request sock in
     match req with
@@ -185,6 +186,22 @@ let handle_request sock =
           ~body:(Option.value (List.assoc_opt "user-agent" req.headers) ~default:"unknown")
           ()
 
+      else if String.starts_with ~prefix:"/files/" req.path then
+        (* File response. *)
+        let filename = String.sub req.path 7 (String.length req.path - 7) in
+        let filepath = Filename.concat base_dir filename in
+        try_bind
+          (fun () -> Lwt_unix.(access filepath [F_OK]))
+          (fun () ->
+             Lwt_io.(with_file ~mode:Input filepath) @@ fun ic ->
+             let* body = Lwt_io.read ic in
+             return @@ HTTPResponse.make
+               ~status:200
+               ~headers:[("Content-Type", "application/octet-stream")]
+               ~body:body
+               ())
+          (fun _ ->
+             return @@ HTTPResponse.make ~status:404 ())
       else
         (* A 404 Not Found response. *)
         return @@ HTTPResponse.make ~status:404 ()
@@ -198,9 +215,11 @@ let handle_request sock =
   (* Send the response. *)
   write_response sock resp
 
-(** [server] runs an HTTP server. *)
-let server =
+(** [server base_dir] runs an HTTP server. *)
+let server base_dir =
   let open Lwt_unix in
+
+  let* () = Lwt_fmt.printf "Publish directory: %s\n%!" base_dir in
 
   (* Ignore the SIGPIPE signal to prevent the program from terminating when
      attempting to write to a closed socket. *)
@@ -226,7 +245,7 @@ let server =
            in
 
            (* Handle a request. *)
-           let* () = handle_request csock in
+           let* () = handle_request csock base_dir in
            (* Close the connection to the client. *)
            shutdown csock SHUTDOWN_ALL;
 
@@ -242,5 +261,18 @@ let server =
 
   serve ()
 
+(** [base_dir] is a command-line argument representing a directory to publish. *)
+let base_dir =
+  let doc = "A directory to publish" in
+  Arg.(value & opt string "/tmp" & info ["d"; "directory"] ~docv:"DIR" ~doc)
+
+(** [cmd] is a command-line interface for the HTTP server.  *)
+let cmd =
+  let doc = "training HTTP-server" in
+  let info = Cmd.info "http_server" ~doc in
+  Cmd.v info
+    Term.(const (fun base_dir -> Lwt_main.run @@ server base_dir) $
+          base_dir)
+
 let () =
-  Lwt_main.run server
+  exit (Cmd.eval cmd)
