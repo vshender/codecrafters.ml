@@ -217,7 +217,8 @@ let server =
   let rec serve () =
     (* Wait for a connection. *)
     let* (csock, caddr) = accept ~cloexec:true ssock in
-    let* () = catch
+    ignore @@ begin
+      catch
         (fun () ->
            let* cni = getnameinfo caddr [] in
            let* () = Lwt_fmt.printf
@@ -233,9 +234,10 @@ let server =
         (fun exc ->
            Lwt_fmt.printf
              "Request handling error: %s\n%!" @@ Printexc.to_string exc)
-    in
-    close csock
-    >>= serve
+      >>= fun () ->
+      close csock
+    end;
+    serve ()
   in
 
   serve ()
