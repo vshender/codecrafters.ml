@@ -196,11 +196,11 @@ let handle_request sock base_dir =
       let content_encoding =
         Option.bind
           (List.assoc_opt "accept-encoding" req.headers)
-          (fun content_encoding ->
-             if List.mem_assoc content_encoding encoders then
-               Some content_encoding
-             else
-               None)
+          (fun content_encodings ->
+             content_encodings
+             |> Str.(split (regexp ", *"))
+             |> List.find_opt
+               (fun content_encoding -> List.mem_assoc content_encoding encoders))
       in
 
       if req.meth = HTTPRequest.POST then begin
