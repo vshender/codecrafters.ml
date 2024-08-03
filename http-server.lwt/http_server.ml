@@ -3,7 +3,7 @@ open Lwt
 open Lwt.Syntax
 
 let encoders = [
-  ("gzip", true);
+  ("gzip", Ezgzip.compress);
 ]
 
 (** [replace_assoc k v l] updates the association list [l] by replacing the
@@ -125,13 +125,16 @@ module HTTPResponse = struct
       ?content_encoding
       ?(body="")
       () =
-    let headers = ref headers in
-    let body_len = String.length body in
+    let headers = ref headers and body = ref body in
+    if Option.is_some content_encoding then begin
+      let content_encoding = Option.get content_encoding in
+      headers := replace_assoc "Content-Encoding" content_encoding !headers;
+      body := (List.assoc content_encoding encoders) !body
+    end;
+    let body_len = String.length !body in
     if body_len > 0 then
       headers := replace_assoc "Content-Length" (string_of_int body_len) !headers;
-    if Option.is_some content_encoding then
-      headers := replace_assoc "Content-Encoding" (Option.get content_encoding) !headers;
-    { version; status; headers = !headers; body }
+    { version; status; headers = !headers; body = !body}
 
   let status_codes = [
     (200, "200 OK");

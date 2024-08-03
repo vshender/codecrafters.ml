@@ -1,5 +1,5 @@
 (executable
  (name http_server)
- (libraries str lwt lwt.unix angstrom angstrom-lwt-unix faraday faraday-lwt-unix cmdliner)
+ (libraries str lwt lwt.unix angstrom angstrom-lwt-unix faraday faraday-lwt-unix cmdliner ezgzip)
  (preprocess
   (pps ppx_deriving.std)))
